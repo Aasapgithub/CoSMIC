@@ -22,7 +22,7 @@ from utils.chat_history import build_context_from_messages
 from utils.general import validate_openai_api_key
 from utils.log_tool import set_color
 from src.controllers.statistics import update_statistic_table
-from internal.models import Config
+from internal.models import Config, LLM
 from internal.openwebui_db import get_latest_model_id
 from internal.db import SessionLocal, Base, engine
 from sqlalchemy.orm import Session
@@ -220,10 +220,17 @@ async def get_config(db: Session = Depends(get_db)):
 
         if db_config:
             # Overlay DB values onto file defaults with appropriate key mapping
-            if db_config.llm_name is not None:
-                config_data["llm_name"] = db_config.llm_name
-            if db_config.is_quantized is not None:
-                config_data["is_quantized"] = db_config.is_quantized
+            # Resolve LLMs via foreign keys
+            if getattr(db_config, "llm_id", None):
+                try:
+                    llm = db.query(LLM).get(db_config.llm_id)
+                    if llm and llm.name:
+                        config_data["llm_name"] = llm.name
+                        # If quantization is part of LLM, reflect it
+                        if hasattr(llm, "is_quantized") and llm.is_quantized is not None:
+                            config_data["is_quantized"] = llm.is_quantized
+                except Exception:
+                    pass
             if db_config.seed is not None:
                 config_data["seed"] = db_config.seed
             if db_config.doc_directory is not None:
@@ -235,10 +242,15 @@ async def get_config(db: Session = Depends(get_db)):
             # Nested: query_analyser
             if "query_analyser" not in config_data or config_data["query_analyser"] is None:
                 config_data["query_analyser"] = {}
-            if db_config.qa_llm_name is not None:
-                config_data["query_analyser"]["llm_name"] = db_config.qa_llm_name
-            if db_config.qa_is_quantized is not None:
-                config_data["query_analyser"]["is_quantized"] = db_config.qa_is_quantized
+            if getattr(db_config, "qa_llm_id", None):
+                try:
+                    qa_llm = db.query(LLM).get(db_config.qa_llm_id)
+                    if qa_llm and qa_llm.name:
+                        config_data["query_analyser"]["llm_name"] = qa_llm.name
+                        if hasattr(qa_llm, "is_quantized") and qa_llm.is_quantized is not None:
+                            config_data["query_analyser"]["is_quantized"] = qa_llm.is_quantized
+                except Exception:
+                    pass
 
             # Nested: rag
             if "rag" not in config_data or config_data["rag"] is None:

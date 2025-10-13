@@ -30,8 +30,6 @@ class Service(Base):
     def value(self):  # type: ignore
         """Backward-compatible attribute. Returns id now that 'value' column is gone."""
         return self.id
-    description = Column(String(255))
-    active = Column(Boolean, default=True)
 
     # Relationships
     configs = relationship("Config", back_populates="service")
@@ -44,10 +42,9 @@ class Config(Base):
     service_id = Column(Integer, ForeignKey("services.id"), index=True, nullable=True)
     chess_path = Column(String)
     doc_directory = Column(String)
-    is_quantized = Column(Boolean)
-    llm_name = Column(String)
-    qa_is_quantized = Column(Boolean)
-    qa_llm_name = Column(String)
+    # LLM references (moved from name/bool fields to FK-based modeling)
+    llm_id = Column(Integer, ForeignKey("llms.id"), index=True, nullable=True)
+    qa_llm_id = Column(Integer, ForeignKey("llms.id"), index=True, nullable=True)
     rag_retrieve_score_threshold = Column(Float)
     rag_topk = Column(Integer)
     rag_vector_db_path = Column(String)
@@ -57,6 +54,25 @@ class Config(Base):
     # Relationships
     user = relationship("User", back_populates="configs")
     service = relationship("Service", back_populates="configs")
+    llm = relationship("LLM", foreign_keys=[llm_id])
+    qa_llm = relationship("LLM", foreign_keys=[qa_llm_id])
+
+    # Backward-compatible accessors for legacy fields
+    @property
+    def llm_name(self):
+        return self.llm.name if getattr(self, "llm", None) else None
+
+    @property
+    def qa_llm_name(self):
+        return self.qa_llm.name if getattr(self, "qa_llm", None) else None
+
+    @property
+    def is_quantized(self):
+        return self.llm.is_quantized if getattr(self, "llm", None) else None
+
+    @property
+    def qa_is_quantized(self):
+        return self.qa_llm.is_quantized if getattr(self, "qa_llm", None) else None
 
 class Statistic(Base):
     __tablename__ = "statistics"
@@ -86,3 +102,5 @@ class LLM(Base):
     # Timestamps from OpenWebUI (epoch seconds)
     created_at = Column(BigInteger)
     updated_at = Column(BigInteger)
+    # Whether the model is quantized (belongs to the LLM itself, not per-config)
+    is_quantized = Column(Boolean)

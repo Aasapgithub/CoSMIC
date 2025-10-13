@@ -19,10 +19,9 @@ class ConfigModel(BaseModel):
     service_id: int
     chess_path: Optional[str] = None
     doc_directory: Optional[str] = None
-    is_quantized: bool = False
-    llm_name: str
-    qa_is_quantized: bool = False
-    qa_llm_name: str
+    # Link to LLM entities instead of duplicating attributes on Config
+    llm_id: Optional[int] = None
+    qa_llm_id: Optional[int] = None
     rag_retrieve_score_threshold: float = 0.0
     rag_topk: int = 10
     rag_vector_db_path: Optional[str] = None
