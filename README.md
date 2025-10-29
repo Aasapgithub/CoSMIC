@@ -1,3 +1,41 @@
+
+## Immediate sync webhook (OpenWebUI → CoSMIC)
+
+To trigger user/LLM synchronization on demand (instead of waiting for a background interval), CoSMIC exposes a simple webhook endpoint. This is useful to sync immediately after user changes in OpenWebUI (create/update/delete) or when updating available LLMs.
+
+- Endpoint: POST /webhook/openwebui/sync
+- Payload: { "type": "users" | "llms" | "all" } (default: all)
+- Optional header for shared secret: X-Cosmic-Webhook-Secret: <your-secret>
+
+Example
+
+```
+curl -X POST http://localhost:3000/webhook/openwebui/sync \
+  -H 'Content-Type: application/json' \
+  -H 'X-Cosmic-Webhook-Secret: <optional-secret>' \
+  -d '{"type":"all"}'
+```
+
+Response shape
+
+```
+{
+  "status": "ok",
+  "summary": {
+    "users": { "inserted": 0, "updated": 0, "deleted": 0, "total_source": 4 },
+    "llms":  { "inserted": 0, "updated": 0, "deleted": 0, "total_source": 1 }
+  }
+}
+```
+
+Notes
+
+- If you configure a secret via COSMIC_WEBHOOK_SECRET, the same value must be provided as X-Cosmic-Webhook-Secret on each call.
+- Periodic sync loop has been removed; synchronization is webhook-only. Any COSMIC_SYNC_INTERVAL_SECONDS setting is ignored.
+- On first boot, CoSMIC runs database migrations. If you see transient Alembic duplicate-table messages (e.g., services already exists), the service will continue after a short retry loop. You can stamp and upgrade manually if needed:
+  - docker compose exec cosmic alembic stamp head
+  - docker compose exec cosmic alembic upgrade head
+
 # OpenSI-CoSMIC - Cognitive System of Machine Intelligent Computing
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-red.svg)](https://opensource.org/licenses/MIT)
@@ -207,7 +245,7 @@ This project is funded under the agreement with the ACT Government for Future Jo
 
 ## Database Schema and ERD (Latest)
 
-Below is the current database schema for the CoSMIC application database (separate from OpenWebUI). This reflects the latest changes: `users.name` added, `services` enhanced (description, active), `llms` table added, and foreign keys/indexes ensured.
+Below is the current database schema for the CoSMIC application database (separate from OpenWebUI). This reflects the latest changes: `services` enhanced (description, active), `llms` table added, and foreign keys/indexes ensured.
 
 ```mermaid
 erDiagram

@@ -10,13 +10,12 @@
 from typing import List
 from datetime import datetime
 import dotenv
-from fastapi import Depends, FastAPI, Request, File, UploadFile, HTTPException
+from fastapi import Depends, FastAPI, Request, File, UploadFile, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from internal.schemas import ServiceModel
 from src.opensi_cosmic import OpenSICoSMIC
 from pydantic import BaseModel
 import yaml, os, shutil
-import threading, time
 from typing import Optional
 
 from utils.chat_history import build_context_from_messages
@@ -30,7 +29,6 @@ from src.controllers.general import get_all_services
 
 # Sync imports
 SYNC_ON_START = os.getenv("COSMIC_SYNC_ON_START", "1") == "1"
-SYNC_INTERVAL_SECONDS = int(os.getenv("COSMIC_SYNC_INTERVAL_SECONDS", "0") or "0")
 try:
     from internal.sync import sync_users, sync_llms
 except Exception as e:  # pragma: no cover - ignore if sync module missing
@@ -57,27 +55,7 @@ if SYNC_ON_START and sync_llms:
     except Exception as sync_e:  # pragma: no cover
         print(f"[cosmic-sync] Startup LLM sync failed: {sync_e}")
 
-# Start a periodic auto-sync loop if configured
-def _auto_sync_loop(interval: int):
-    # Delay initial run slightly to allow DBs to come up
-    time.sleep(5)
-    while True:
-        try:
-            if sync_users:
-                summary = sync_users()
-                print(f"[cosmic-sync] Periodic user sync: {summary}")
-            if sync_llms:
-                summary = sync_llms()
-                print(f"[cosmic-sync] Periodic LLM sync: {summary}")
-        except Exception as e:
-            print(f"[cosmic-sync] Periodic sync error: {e}")
-        time.sleep(max(interval, 60))
-
-@app.on_event("startup")
-async def start_auto_sync():
-    if SYNC_INTERVAL_SECONDS > 0:
-        t = threading.Thread(target=_auto_sync_loop, args=(SYNC_INTERVAL_SECONDS,), daemon=True, name="cosmic-auto-sync")
-        t.start()
+# Periodic auto-sync has been removed; synchronization is webhook-driven only.
 
 def get_db():
     db = SessionLocal()
@@ -113,6 +91,10 @@ os.makedirs(UPLOAD_BASE_DIR, exist_ok=True)
 class CosmicAPI(BaseModel):
     body: dict
     user_message: str
+
+class SyncWebhookPayload(BaseModel):
+    # type can be 'users', 'llms', or 'all' (default)
+    type: Optional[str] = "all"
 
 config_path = "scripts/configs/config_updated.yaml"
 
@@ -208,29 +190,63 @@ def rebuild_cosmic():
         print('Reconstruct OpenSICoSMIC due to changed configs.')
         openai_api_status = opensi_cosmic.check_openai_key()
 
+def _validate_webhook_secret(secret_header: Optional[str]) -> None:
+    """Validate webhook secret if configured via COSMIC_WEBHOOK_SECRET.
+
+    Accepts either the raw secret in header X-Cosmic-Webhook-Secret or
+    an Authorization: Bearer <token> style value passed in the same header.
+    If no secret is configured, requests are allowed but a warning is printed.
+    """
+    expected = os.getenv("COSMIC_WEBHOOK_SECRET", "")
+    if not expected:
+        # No secret configured; allow but warn.
+        print("[webhook] Warning: COSMIC_WEBHOOK_SECRET not set; webhook not authenticated.")
+        return
+    if not secret_header:
+        raise HTTPException(status_code=401, detail="Missing webhook secret header")
+    token = secret_header
+    if token.lower().startswith("bearer "):
+        token = token[7:]
+    if token != expected:
+        raise HTTPException(status_code=403, detail="Invalid webhook secret")
+
 @app.get("/")
 async def read_root():
     return {"message": "Welcome to the OpenSICoSMIC API"}
 
-@app.post("/admin/sync/users")
-async def admin_sync_users():
-    if not sync_users:
-        raise HTTPException(status_code=503, detail="Sync unavailable")
-    try:
-        summary = sync_users()
-        return {"status": "ok", "summary": summary}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"User sync failed: {e}")
+# Admin sync endpoints have been removed in favor of a single webhook-driven sync.
 
-@app.post("/admin/sync/llms")
-async def admin_sync_llms():
-    if not sync_llms:
+@app.post("/webhook/openwebui/sync")
+async def webhook_sync(
+    payload: SyncWebhookPayload,
+    x_cosmic_webhook_secret: Optional[str] = Header(default=None, alias="X-Cosmic-Webhook-Secret"),
+):
+    """Immediate sync webhook for OpenWebUI events.
+
+    Body: { "type": "users" | "llms" | "all" }
+    Header: X-Cosmic-Webhook-Secret: <token> (optional if COSMIC_WEBHOOK_SECRET unset)
+    """
+    # Validate secret if configured
+    _validate_webhook_secret(x_cosmic_webhook_secret)
+
+    if not (sync_users or sync_llms):
         raise HTTPException(status_code=503, detail="Sync unavailable")
+
+    kind = (payload.type or "all").lower()
+    result = {}
     try:
-        summary = sync_llms()
-        return {"status": "ok", "summary": summary}
+        if kind in ("users", "all") and sync_users:
+            result["users"] = sync_users()
+        if kind in ("llms", "all") and sync_llms:
+            result["llms"] = sync_llms()
+        # Log a concise summary for observability
+        try:
+            print(f"[webhook-sync] type={kind} summary={result}")
+        except Exception:
+            pass
+        return {"status": "ok", "summary": result}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"LLM sync failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Webhook sync failed: {e}")
 
 @app.get("/config")
 async def get_config(db: Session = Depends(get_db)):
@@ -448,36 +464,45 @@ async def process_cosmic(data: CosmicAPI, db: Session = Depends(get_db)):
             db
         )
 
-        # Proceed as normal
-        if openai_api_status != "":
-            answer = openai_api_status
-        else:
-            # Find the key word for adding file to vector database.
-            if data.user_message.find("</files>") > -1:
-                splits = data.user_message.split("</files>")
+        # Proceed as normal but keep the API resilient: never 500 on inference issues.
+        try:
+            if openai_api_status != "":
+                answer = openai_api_status
+            else:
+                # Find the key word for adding file to vector database.
+                if data.user_message.find("</files>") > -1:
+                    splits = data.user_message.split("</files>")
 
-                # Extract the original question.
-                data.user_message = splits[1]
-                
+                    # Extract the original question.
+                    data.user_message = splits[1]
 
-                # The directory storing uploaded files.
-                file_dir = f"backend/data/uploads/{user_id}"
+                    # The directory storing uploaded files.
+                    file_dir = f"backend/data/uploads/{user_id}"
 
-                # Extract the files.
-                files = splits[0].split("<files>")[-1]
-                files = [os.path.join(file_dir, v) for v in files.split(',') if v != ""]
+                    # Extract the files.
+                    files = splits[0].split("<files>")[-1]
+                    files = [os.path.join(file_dir, v) for v in files.split(',') if v != ""]
 
-                for file in files:
-                    # Form a prompt to update vector database.
-                    user_message_vector_db_update = \
-                        f"Add the following file to the vector database: {file}"
+                    for file in files:
+                        # Form a prompt to update vector database.
+                        user_message_vector_db_update = (
+                            f"Add the following file to the vector database: {file}"
+                        )
 
-                    # Update vector database.
-                    answer = opensi_cosmic(user_message_vector_db_update)[0]
+                        # Update vector database.
+                        answer = opensi_cosmic(user_message_vector_db_update)[0]
 
-            answer = opensi_cosmic(question=data.user_message,
-                                   context=chat_history_context)[0]
-        return {"status": "success", "result": answer}
+                answer = opensi_cosmic(
+                    question=data.user_message, context=chat_history_context
+                )[0]
+            return {"status": "success", "result": answer}
+        except Exception as infer_e:
+            # Return a structured error without failing the request. Stats were already updated above.
+            return {
+                "status": "error",
+                "message": "Inference failed",
+                "detail": str(infer_e),
+            }
     except HTTPException as http_exc:
         raise http_exc
     except Exception as e:

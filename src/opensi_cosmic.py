@@ -246,6 +246,11 @@ class OpenSICoSMIC:
             llm_instance_name = "GPT"
         elif llm_name.find("ollama") > -1:
             llm_instance_name = "Ollama"
+        # Fallback: if the model id looks like a tagged local model (e.g., "llama3.2:1b")
+        # default to using the Ollama backend. This covers OpenWebUI model ids that don't
+        # include the "ollama:" prefix.
+        elif ":" in llm_name:
+            llm_instance_name = "Ollama"
         else:
             print(set_color("error", f"Unsupported LLM: {llm_name}."))
             sys.exit()

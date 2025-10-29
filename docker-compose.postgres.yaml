@@ -41,6 +41,8 @@ services:
     container_name: open-webui
     volumes:
       - open-webui:/app/backend/data #used to store the vector data base by open-webui and cosmic
+      # Mount backend code to avoid heavy frontend rebuilds and enable quick backend updates
+      - ./../OpenWebUI-CoSMIC/backend/open_webui:/app/backend/open_webui
     depends_on:
       - cosmic_db_server
       - ollama
@@ -56,7 +58,8 @@ services:
       - WEBUI_SECRET_KEY=
       - OPENAI_API_KEY=0p3n-w3bu!
       - OPENAI_API_BASE_URL=http://pipelines:9099
-      - OPENSI_COSMIC_API_BASE_URL=http://localhost:3000
+      - OPENSI_COSMIC_API_BASE_URL=http://cosmic:3000
+      - COSMIC_WEBHOOK_SECRET=${COSMIC_WEBHOOK_SECRET}
       - ENABLE_OAUTH_SIGNUP=true
       - MICROSOFT_CLIENT_ID=${AZURE_CLIENT_ID}
       - MICROSOFT_CLIENT_SECRET=${AZURE_CLIENT_SECRET}
@@ -121,7 +124,9 @@ services:
       CREATE_COSMIC_DB: "1"
       # Auto-sync configuration
       COSMIC_SYNC_ON_START: "1"
-      COSMIC_SYNC_INTERVAL_SECONDS: "300"
+      COSMIC_SYNC_INTERVAL_SECONDS: "0"
+      # Webhook secret for authenticating immediate sync requests (optional)
+      COSMIC_WEBHOOK_SECRET: ${COSMIC_WEBHOOK_SECRET}
       # Source OpenWebUI database (for sync)
       OPENWEBUI_DATABASE_URL: postgresql://${DATABASE_USER}:${DATABASE_PASSWORD}@cosmic_db_server:5432/openwebui_db
 

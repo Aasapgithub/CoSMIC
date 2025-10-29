@@ -52,16 +52,25 @@ class OpenWebUIUser:  # type: ignore
 def sync_users() -> dict:
     """Synchronize users from OpenWebUI DB into cosmic users table.
 
-    Returns summary dict: {inserted: int, updated: int, total_source: int}
+    Behavior:
+    - Upsert users by email/openweb_id
+    - Purge (delete) users that no longer exist in OpenWebUI (by openweb_id)
+
+    Returns summary dict: {inserted: int, updated: int, deleted: int, total_source: int}
     """
     inserted = 0
     updated = 0
+    deleted = 0
     total = 0
 
     with get_openwebui_session() as src_db, CosmicSessionLocal() as dst_db:
         try:
             rows: List[OpenWebUIUser] = list(src_db.scalars(select(OpenWebUIUser)))
             total = len(rows)
+            source_ids = {r.id for r in rows}
+            source_emails = {r.email for r in rows}
+
+            # Upsert/Update
             for row in rows:
                 # Find by email in cosmic DB
                 existing = (
@@ -101,14 +110,27 @@ def sync_users() -> dict:
                         inserted += 1
                     except Exception as inner_e:  # pragma: no cover - defensive
                         log.error("Failed to stage new user %s: %s", row.email, inner_e)
-                # Flush batched changes periodically (could optimize for large sets)
+            # Purge: remove cosmic users that have an openweb_id not present in source anymore
+            stale_users = (
+                dst_db.query(cosmic_models.User)
+                .filter(cosmic_models.User.openweb_id.isnot(None))
+                .all()
+            )
+            for u in stale_users:
+                try:
+                    if getattr(u, "openweb_id", None) and u.openweb_id not in source_ids:
+                        dst_db.delete(u)
+                        deleted += 1
+                except Exception as inner_e:  # pragma: no cover
+                    log.error("Failed to delete stale user %s: %s", getattr(u, "email", None), inner_e)
+
             dst_db.commit()
         except SQLAlchemyError as e:
             dst_db.rollback()
             log.error("User sync failed: %s", e)
             raise
 
-    summary = {"inserted": inserted, "updated": updated, "total_source": total}
+    summary = {"inserted": inserted, "updated": updated, "deleted": deleted, "total_source": total}
     log.info("User sync summary: %s", summary)
     return summary
 
@@ -127,16 +149,21 @@ class OpenWebUIModel:  # type: ignore
 def sync_llms() -> dict:
     """Synchronize LLM models from OpenWebUI DB into cosmic llms table.
 
-    Upsert by openweb_model_id; update name/base_model_id/updated_at/created_at when changed.
+    Behavior:
+    - Upsert by openweb_model_id
+    - Purge (delete) LLMs in cosmic that no longer exist in OpenWebUI
     """
     inserted = 0
     updated = 0
+    deleted = 0
     total = 0
 
     with get_openwebui_session() as src_db, CosmicSessionLocal() as dst_db:
         try:
             rows: List[OpenWebUIModel] = list(src_db.scalars(select(OpenWebUIModel)))
             total = len(rows)
+            source_ids = {r.id for r in rows}
+
             for row in rows:
                 existing = (
                     dst_db.query(cosmic_models.LLM)
@@ -169,13 +196,26 @@ def sync_llms() -> dict:
                     )
                     dst_db.add(model)
                     inserted += 1
+            # Purge: remove cosmic LLM rows with openweb_model_id not in source
+            stale_models = (
+                dst_db.query(cosmic_models.LLM)
+                .filter(cosmic_models.LLM.openweb_model_id.isnot(None))
+                .all()
+            )
+            for m in stale_models:
+                try:
+                    if getattr(m, "openweb_model_id", None) and m.openweb_model_id not in source_ids:
+                        dst_db.delete(m)
+                        deleted += 1
+                except Exception as inner_e:  # pragma: no cover
+                    log.error("Failed to delete stale model %s: %s", getattr(m, "openweb_model_id", None), inner_e)
             dst_db.commit()
         except SQLAlchemyError as e:
             dst_db.rollback()
             log.error("LLM sync failed: %s", e)
             raise
 
-    summary = {"inserted": inserted, "updated": updated, "total_source": total}
+    summary = {"inserted": inserted, "updated": updated, "deleted": deleted, "total_source": total}
     log.info("LLM sync summary: %s", summary)
     return summary
 
