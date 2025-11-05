@@ -89,8 +89,10 @@ class QueryAnalyser:
         elif llm_name.find("ollama") > -1:
             llm_instance_name = "Ollama"
         else:
-            print(set_color("error", f"Unsupported LLM: {llm_name}."))
-            sys.exit()
+            # Graceful fallback: treat unknown values as Ollama-tagged models
+            # (e.g., OpenWebUI model ids like "llama3.2:1b").
+            print(set_color("warning", f"Unrecognized LLM '{llm_name}', defaulting to Ollama backend."))
+            llm_instance_name = "Ollama"
 
         # Build LLM instance from class defined in .py
         self.llm = get_instance(llm_instances, llm_instance_name)(

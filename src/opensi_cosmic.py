@@ -239,6 +239,12 @@ class OpenSICoSMIC:
         Return:
             llm (LLMBase): LLM instance.
         """
+        # Normalize OpenWebUI/Ollama-style model IDs (e.g., "llama3.2:1b") to include the
+        # explicit "ollama:" prefix so we consistently route to the Ollama backend.
+        # This avoids older image versions failing to detect Ollama when only a tag is present.
+        if ("ollama" not in llm_name) and (":" in llm_name):
+            llm_name = f"ollama:{llm_name}"
+
         # Build LLM instance from class defined in .py if llm_name is supported.
         if llm_name in LLM_INSTANCE_DICT.keys():
             llm_instance_name = LLM_INSTANCE_DICT[llm_name]
@@ -246,14 +252,11 @@ class OpenSICoSMIC:
             llm_instance_name = "GPT"
         elif llm_name.find("ollama") > -1:
             llm_instance_name = "Ollama"
-        # Fallback: if the model id looks like a tagged local model (e.g., "llama3.2:1b")
-        # default to using the Ollama backend. This covers OpenWebUI model ids that don't
-        # include the "ollama:" prefix.
-        elif ":" in llm_name:
-            llm_instance_name = "Ollama"
         else:
-            print(set_color("error", f"Unsupported LLM: {llm_name}."))
-            sys.exit()
+            # Graceful fallback: if we can't classify, default to Ollama
+            # so containers don't restart-loop on unknown model ids.
+            print(set_color("warning", f"Unrecognized LLM '{llm_name}', defaulting to Ollama backend."))
+            llm_instance_name = "Ollama"
 
         llm = get_instance(llm_instances, llm_instance_name)(
             llm_name=llm_name,
