@@ -147,6 +147,8 @@ class QABase(ServiceBase):
             # Check if context is a .pdf.
             is_a_document = service_info_dict["is_a_document"]
 
+            updated = False
+
             if is_a_document:
                 # Get absolute document path.
                 document_path = service_info_dict["document_path"]
@@ -154,6 +156,7 @@ class QABase(ServiceBase):
                 if document_path is not None:
                     # Update the knowledge database and return the status.
                     self.rag.vector_database.update_database_from_document(document_path=document_path)
+                    updated = True
             else:
                 # Get text.
                 text = service_info_dict["text"]
@@ -161,8 +164,27 @@ class QABase(ServiceBase):
                 if text is not None:
                     # Add text to database.
                     self.rag.vector_database.update_database_from_text(text=text)
+                    updated = True
 
-            response = raw_response = "Vector database updated."
+            if updated:
+                response = raw_response = "Vector database updated."
+            else:
+                # Fall back to general QA if nothing to update
+                if is_rag:
+                    chat_history_context = context if "Conversation History:" in context else ""
+                    rag_context = "" if "Conversation History:" in context else context
+
+                    user_prompt = self.llm.user_prompter(query, context=rag_context)
+                    context_retrieved, retrieve_score = self.rag(query)
+                    suffix = "" if context_retrieved == "" else "\nContext:\n" + context_retrieved
+                    context = context.update({"context": chat_history_context + suffix}) \
+                              if isinstance(context, dict) \
+                              else chat_history_context + suffix
+                else:
+                    user_prompt = query
+                    retrieve_score = -1
+
+                response, raw_response = self.llm(user_prompt, context=context)
         elif service_option == "2":
             raw_response, response = self.code_generator(query)
         else:

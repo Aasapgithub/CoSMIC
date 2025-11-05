@@ -342,6 +342,11 @@ class QueryAnalyser:
                 f"Query: {query}, analysis: {service_analysis}, service: {service_option}."
             ))
 
+        # Guard: if LLM selected vector update but the query doesn't look like an update,
+        # fall back to general QA. We require an explicit ':' (text to index) or a '.pdf' mention.
+        if service_option == "1" and (":" not in query and ".pdf" not in query.lower()):
+            service_option = "3"
+
         if service_option == "0":
             # Remove last symbol.
             if query[-1] in [",", ".", "!", "?"]: query = query[:-1]
